@@ -196,7 +196,7 @@ export const EmployeeForm: React.FC<Props> = ({ initialData, onSave, onCancel })
     lines.push(
        <div key="total" className="mt-3 pt-2 border-t border-orange-200 font-bold text-orange-900">
           總計 (未捨入): {subtotal.toFixed(4)} <br/>
-          最終四捨五入: {Math.round(subtotal).toLocaleString()}
+          最終無條件進位: {Math.ceil(subtotal).toLocaleString()}
        </div>
     );
 
