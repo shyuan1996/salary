@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Employee, Allowance, Deduction } from '../types';
-import { Plus, Trash2, Save, X, Calculator, Info, AlertTriangle, Table2 } from 'lucide-react';
+import { Plus, Trash2, Save, X, Calculator, Info, AlertTriangle, Table2, StickyNote } from 'lucide-react';
 import { 
   calculateOvertimePay, 
   LABOR_BRACKETS, 
   HEALTH_BRACKETS, 
+  PENSION_BRACKETS,
   LABOR_INSURANCE_RATE,
   LABOR_EMPLOYEE_SHARE,
   LABOR_EMPLOYER_SHARE,
@@ -27,6 +28,7 @@ export const EmployeeForm: React.FC<Props> = ({ initialData, onSave, onCancel })
   const [position, setPosition] = useState(initialData?.position || '');
   const [joinDate, setJoinDate] = useState(initialData?.joinDate || new Date().toISOString().split('T')[0]);
   const [dependents, setDependents] = useState(initialData?.dependents.toString() || '0');
+  const [note, setNote] = useState(initialData?.note || '');
   
   // Bank Info
   const [bankName, setBankName] = useState(initialData?.bankName || '');
@@ -55,6 +57,11 @@ export const EmployeeForm: React.FC<Props> = ({ initialData, onSave, onCancel })
   const [previewOT, setPreviewOT] = useState(0);
   const [hourlyRate, setHourlyRate] = useState(0);
   const [regularSalary, setRegularSalary] = useState(0);
+
+  // Draggable Modal State
+  const [modalPosition, setModalPosition] = useState({ x: 0, y: 0 });
+  const [isDraggingModal, setIsDraggingModal] = useState(false);
+  const dragStartRef = useRef({ x: 0, y: 0, initialX: 0, initialY: 0 });
 
   useEffect(() => {
     const base = parseInt(baseSalary) || 0;
@@ -92,6 +99,7 @@ export const EmployeeForm: React.FC<Props> = ({ initialData, onSave, onCancel })
       position,
       department,
       joinDate,
+      note,
       bankName,
       bankAccount,
       dependents: parseInt(dependents) || 0,
@@ -107,6 +115,42 @@ export const EmployeeForm: React.FC<Props> = ({ initialData, onSave, onCancel })
       customDeductions: customDeductions.filter(d => d.name && d.amount),
     };
     onSave(newEmployee);
+  };
+
+  // Draggable Modal Logic
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDraggingModal) return;
+      const dx = e.clientX - dragStartRef.current.x;
+      const dy = e.clientY - dragStartRef.current.y;
+      setModalPosition({
+        x: dragStartRef.current.initialX + dx,
+        y: dragStartRef.current.initialY + dy
+      });
+    };
+
+    const handleMouseUp = () => {
+      setIsDraggingModal(false);
+    };
+
+    if (isDraggingModal) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+    }
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDraggingModal]);
+
+  const handleModalMouseDown = (e: React.MouseEvent) => {
+    setIsDraggingModal(true);
+    dragStartRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      initialX: modalPosition.x,
+      initialY: modalPosition.y
+    };
   };
 
   const inputStyle = "w-full px-4 py-2 bg-white text-black border border-black rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition placeholder-gray-500";
@@ -127,7 +171,6 @@ export const EmployeeForm: React.FC<Props> = ({ initialData, onSave, onCancel })
     const rd = parseFloat(otRestDay) || 0;
     const hd = parseFloat(otHoliday) || 0;
 
-    // Fix: JSX namespace might not be available, use React.ReactNode instead
     let lines: React.ReactNode[] = [];
     let subtotal = 0;
 
@@ -208,26 +251,37 @@ export const EmployeeForm: React.FC<Props> = ({ initialData, onSave, onCancel })
       
       {/* Insurance Table Modal */}
       {showInsuranceTable && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
-            <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-slate-50">
-               <h3 className="text-xl font-bold text-slate-800 flex items-center">
-                 <Table2 className="mr-2"/> 勞健保負擔金額對照表
+        <div className="fixed inset-0 z-50 flex no-print pointer-events-none">
+          <div 
+             className="bg-white rounded-xl shadow-2xl max-w-5xl w-full max-h-[90vh] overflow-hidden flex flex-col absolute pointer-events-auto"
+             style={{ 
+               transform: `translate(${modalPosition.x}px, ${modalPosition.y}px)`,
+               left: 'calc(50% - 32rem)',
+               top: '10%',
+               boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)'
+             }}
+          >
+            <div 
+              className="p-4 border-b border-slate-200 flex justify-between items-center bg-slate-50 cursor-move"
+              onMouseDown={handleModalMouseDown}
+            >
+               <h3 className="text-xl font-bold text-slate-800 flex items-center pointer-events-none">
+                 <Table2 className="mr-2"/> 勞健保與勞退分級表
                </h3>
                <button onClick={() => setShowInsuranceTable(false)} className="p-2 hover:bg-slate-200 rounded-full"><X/></button>
             </div>
             <div className="p-6 overflow-y-auto">
-               <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+               <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
                   {/* Labor Insurance */}
                   <div>
-                     <h4 className="font-bold text-rose-700 mb-2">勞工保險 (普通+就業)</h4>
-                     <div className="overflow-x-auto border rounded-lg">
+                     <h4 className="font-bold text-rose-700 mb-2 border-b-2 border-rose-200 pb-1">勞工保險</h4>
+                     <div className="overflow-x-auto border rounded-lg h-96">
                         <table className="w-full text-sm text-center">
-                           <thead className="bg-rose-50 text-rose-900 font-bold">
+                           <thead className="bg-rose-50 text-rose-900 font-bold sticky top-0">
                               <tr>
                                  <th className="p-2 border-b">投保薪資</th>
-                                 <th className="p-2 border-b">員工負擔 (20%)</th>
-                                 <th className="p-2 border-b">公司負擔 (70%)</th>
+                                 <th className="p-2 border-b">自付(20%)</th>
+                                 <th className="p-2 border-b">公司(70%)</th>
                               </tr>
                            </thead>
                            <tbody className="divide-y divide-slate-100">
@@ -249,10 +303,10 @@ export const EmployeeForm: React.FC<Props> = ({ initialData, onSave, onCancel })
 
                   {/* Health Insurance */}
                   <div>
-                     <h4 className="font-bold text-emerald-700 mb-2">全民健保</h4>
-                     <div className="overflow-x-auto border rounded-lg">
+                     <h4 className="font-bold text-emerald-700 mb-2 border-b-2 border-emerald-200 pb-1">全民健保</h4>
+                     <div className="overflow-x-auto border rounded-lg h-96">
                         <table className="w-full text-sm text-center">
-                           <thead className="bg-emerald-50 text-emerald-900 font-bold">
+                           <thead className="bg-emerald-50 text-emerald-900 font-bold sticky top-0">
                               <tr>
                                  <th className="p-2 border-b">投保薪資</th>
                                  <th className="p-2 border-b">本人負擔</th>
@@ -278,22 +332,65 @@ export const EmployeeForm: React.FC<Props> = ({ initialData, onSave, onCancel })
                         </table>
                      </div>
                   </div>
+
+                  {/* Pension */}
+                  <div>
+                     <h4 className="font-bold text-indigo-700 mb-2 border-b-2 border-indigo-200 pb-1">勞工退休金(6%)</h4>
+                     <div className="overflow-x-auto border rounded-lg h-96">
+                        <table className="w-full text-sm text-center">
+                           <thead className="bg-indigo-50 text-indigo-900 font-bold sticky top-0">
+                              <tr>
+                                 <th className="p-2 border-b">月提繳工資</th>
+                                 <th className="p-2 border-b">公司提繳</th>
+                              </tr>
+                           </thead>
+                           <tbody className="divide-y divide-slate-100">
+                              {PENSION_BRACKETS.map(salary => (
+                                 <tr key={salary} className="hover:bg-slate-50">
+                                    <td className="p-1.5 font-mono">{salary.toLocaleString()}</td>
+                                    <td className="p-1.5 text-indigo-600 font-medium">
+                                       {Math.round(salary * 0.06)}
+                                    </td>
+                                 </tr>
+                              ))}
+                           </tbody>
+                        </table>
+                     </div>
+                  </div>
+
                </div>
             </div>
           </div>
         </div>
       )}
 
-      <div className="flex justify-between items-center mb-8 border-b border-slate-200 pb-4">
+      <div className="flex justify-between items-start mb-8 border-b border-slate-200 pb-4">
         <div>
           <h2 className="text-2xl font-bold text-slate-800">
             {initialData ? '編輯員工資料' : '新增員工'}
           </h2>
           <p className="text-slate-500 text-sm mt-1">請填寫完整的薪資與人事資料</p>
         </div>
-        <button onClick={onCancel} className="p-2 hover:bg-slate-100 rounded-full transition">
-          <X size={28} className="text-slate-500" />
-        </button>
+        
+        <div className="flex items-center gap-4">
+           {/* Employee Note Field */}
+           <div className="flex flex-col items-end">
+              <label className="text-xs font-bold text-slate-500 mb-1 flex items-center gap-1">
+                 <StickyNote size={12}/> 備註
+              </label>
+              <textarea 
+                value={note}
+                onChange={e => setNote(e.target.value)}
+                placeholder="例如: 職務代理中..."
+                className="w-64 px-3 py-2 bg-white text-black border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none resize-none text-sm shadow-sm"
+                rows={4}
+              />
+           </div>
+           
+           <button onClick={onCancel} className="p-2 hover:bg-slate-100 rounded-full transition text-slate-500 self-start mt-4">
+             <X size={28} />
+           </button>
+        </div>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-8">
@@ -316,7 +413,13 @@ export const EmployeeForm: React.FC<Props> = ({ initialData, onSave, onCancel })
             </div>
             <div>
               <label className="block text-sm font-bold text-slate-700 mb-1">入職日期</label>
-              <input type="date" value={joinDate} onChange={e => setJoinDate(e.target.value)} className={inputStyle} />
+              <input 
+                 type="date" 
+                 value={joinDate} 
+                 onChange={e => setJoinDate(e.target.value)} 
+                 className={`${inputStyle} text-black font-medium`} 
+                 style={{colorScheme: 'light'}} 
+              />
             </div>
             <div>
               <label className="block text-sm font-bold text-slate-700 mb-1">扶養親屬 (健保)</label>

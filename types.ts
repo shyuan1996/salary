@@ -16,6 +16,7 @@ export interface Employee {
   name: string;
   position: string; // Optional in form, but string type here
   department: string; // Optional in form
+  note?: string; // New field: 員工備註
   
   // Bank Details
   bankName: string;
@@ -47,6 +48,7 @@ export interface CalculatedPayroll {
   employeeId: string;
   insuredSalary: number; // 勞保投保薪資
   insuredSalaryHealth: number; // 健保投保薪資
+  insuredSalaryPension: number; // 勞退提繳工資
   
   // Employee Deductions
   laborInsuranceEmp: number; // 勞保自付

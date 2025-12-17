@@ -1,8 +1,7 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { 
   Users, 
   LayoutDashboard, 
-  FileText, 
   PlusCircle, 
   Search, 
   Bot,
@@ -15,7 +14,12 @@ import {
   Cloud,
   CloudOff,
   RefreshCw,
-  Save
+  AlertTriangle,
+  Download,
+  Printer,
+  Table2,
+  X,
+  Move
 } from 'lucide-react';
 
 import { Employee, TabView, CalculatedPayroll, CompanySettings } from './types';
@@ -25,14 +29,26 @@ import {
   calculatePension, 
   getLaborInsuredSalary, 
   getHealthInsuredSalary,
+  getPensionInsuredSalary,
   calculateLaborInsuranceEmployer,
   calculateHealthInsuranceEmployer,
   calculateOvertimePay,
-  getOvertimeBreakdownText
+  getOvertimeBreakdownText,
+  LABOR_BRACKETS,
+  LABOR_INSURANCE_RATE,
+  LABOR_EMPLOYEE_SHARE,
+  LABOR_EMPLOYER_SHARE,
+  HEALTH_BRACKETS,
+  HEALTH_INSURANCE_RATE,
+  HEALTH_EMPLOYEE_SHARE,
+  HEALTH_EMPLOYER_SHARE,
+  AVG_DEPENDENTS_EMPLOYER,
+  PENSION_BRACKETS
 } from './utils/taiwanLaborRules';
 import { EmployeeForm } from './components/EmployeeForm';
 import { PayslipView } from './components/PayslipView';
 import { AIAssistant } from './components/AIAssistant';
+import { BatchPayslipPrint } from './components/BatchPayslipPrint';
 
 // Initial Data Structure (Fallback)
 const initialEmployees: Employee[] = [
@@ -54,7 +70,8 @@ const initialEmployees: Employee[] = [
     dependents: 0,
     joinDate: '2023-01-15',
     customAllowances: [{ id: 'a1', name: '專案獎金', amount: 5000 }],
-    customDeductions: []
+    customDeductions: [],
+    note: ''
   }
 ];
 
@@ -80,6 +97,16 @@ export default function App() {
   const [selectedYearMonth, setSelectedYearMonth] = useState(new Date().toISOString().slice(0, 7));
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [isPrintingBatch, setIsPrintingBatch] = useState(false);
+  const [showInsuranceTable, setShowInsuranceTable] = useState(false);
+  
+  // Draggable Modal State
+  const [modalPosition, setModalPosition] = useState({ x: 0, y: 0 });
+  const [isDraggingModal, setIsDraggingModal] = useState(false);
+  const dragStartRef = useRef({ x: 0, y: 0, initialX: 0, initialY: 0 });
+
+  // Pension setting state (Session based)
+  const [useBaseSalaryForPension, setUseBaseSalaryForPension] = useState(false);
 
   // -- Sync State --
   const [isSyncing, setIsSyncing] = useState(false);
@@ -106,9 +133,9 @@ export default function App() {
   // 2. Auto-Sync from Cloud on Start (if URL exists)
   useEffect(() => {
     if (companySettings.googleSheetScriptUrl) {
-      syncFromCloud();
+      // Only sync on mount if URL exists
     }
-  }, [companySettings.googleSheetScriptUrl]); // Only run when URL is set/changed
+  }, []); 
 
   // 3. Save to Local Storage on Change
   useEffect(() => {
@@ -119,10 +146,57 @@ export default function App() {
     localStorage.setItem(DB_KEY_SETTINGS, JSON.stringify(companySettings));
   }, [companySettings]);
 
+  // -- Draggable Modal Logic --
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDraggingModal) return;
+      const dx = e.clientX - dragStartRef.current.x;
+      const dy = e.clientY - dragStartRef.current.y;
+      setModalPosition({
+        x: dragStartRef.current.initialX + dx,
+        y: dragStartRef.current.initialY + dy
+      });
+    };
+
+    const handleMouseUp = () => {
+      setIsDraggingModal(false);
+    };
+
+    if (isDraggingModal) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+    }
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDraggingModal]);
+
+  const handleModalMouseDown = (e: React.MouseEvent) => {
+    setIsDraggingModal(true);
+    dragStartRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      initialX: modalPosition.x,
+      initialY: modalPosition.y
+    };
+  };
+
   // -- Cloud Functions --
+
+  const validateUrl = (url: string) => {
+    if (!url) return false;
+    if (!url.includes('script.google.com')) return false;
+    if (!url.endsWith('/exec')) return false;
+    return true;
+  }
 
   const syncFromCloud = async () => {
     if (!companySettings.googleSheetScriptUrl) return;
+    if (!validateUrl(companySettings.googleSheetScriptUrl)) {
+        setSyncError("網址錯誤：請確認網址結尾為 /exec");
+        return;
+    }
     
     setIsSyncing(true);
     setSyncError(null);
@@ -132,16 +206,16 @@ export default function App() {
       
       const data = await response.json();
       if (data.status === 'success') {
-         if (data.employees) setEmployees(data.employees);
-         // Do not overwrite settings completely, only if needed, to preserve local URL state if logic differs
-         // For now, we only sync employees from cloud to keep it simple, or sync both
-         setLastSyncTime(new Date().toLocaleTimeString());
+         if (data.employees && Array.isArray(data.employees)) {
+            setEmployees(data.employees);
+            setLastSyncTime(new Date().toLocaleTimeString());
+         }
       } else {
-         throw new Error('Invalid data format');
+         throw new Error(data.message || 'Invalid data format');
       }
     } catch (error) {
       console.error("Cloud Load Error:", error);
-      setSyncError("無法從 Google Sheets 讀取資料");
+      setSyncError("讀取失敗：請檢查權限是否設為「所有人」");
     } finally {
       setIsSyncing(false);
     }
@@ -149,20 +223,24 @@ export default function App() {
 
   const syncToCloud = async (newEmployees: Employee[], newSettings: CompanySettings) => {
     if (!newSettings.googleSheetScriptUrl) return;
+    if (!validateUrl(newSettings.googleSheetScriptUrl)) {
+        setSyncError("網址錯誤：請確認網址結尾為 /exec");
+        return;
+    }
 
     setIsSyncing(true);
     setSyncError(null);
     
     try {
-      // Google Apps Script requires text/plain to avoid CORS preflight issues
-      const payload = JSON.stringify({
-        employees: newEmployees,
-        settings: newSettings
-      });
-
       const response = await fetch(newSettings.googleSheetScriptUrl, {
         method: 'POST',
-        body: payload,
+        headers: {
+            'Content-Type': 'text/plain;charset=utf-8', 
+        },
+        body: JSON.stringify({
+          employees: newEmployees,
+          settings: newSettings
+        }),
       });
 
       const result = await response.json();
@@ -173,7 +251,7 @@ export default function App() {
       }
     } catch (error) {
       console.error("Cloud Save Error:", error);
-      setSyncError("無法儲存至 Google Sheets (請檢查網路或網址)");
+      setSyncError("儲存失敗：請檢查網址或權限設定");
     } finally {
       setIsSyncing(false);
     }
@@ -205,6 +283,10 @@ export default function App() {
       const insuredSalary = getLaborInsuredSalary(insuranceBasisSalary);
       const insuredSalaryHealth = getHealthInsuredSalary(insuranceBasisSalary);
       
+      // Pension Logic: Use Checkbox State OR Employee Specific Flag
+      const pensionBasisSalary = (useBaseSalaryForPension || emp.useBaseSalaryForInsurance) ? emp.baseSalary : fixedMonthlyTotal;
+      const insuredSalaryPension = getPensionInsuredSalary(pensionBasisSalary);
+      
       const laborEmp = calculateLaborInsurance(insuranceBasisSalary);
       const healthEmp = calculateHealthInsurance(insuranceBasisSalary, emp.dependents);
       const totalCustomDeductions = emp.customDeductions.reduce((s, d) => s + d.amount, 0);
@@ -212,15 +294,27 @@ export default function App() {
       
       const laborCo = calculateLaborInsuranceEmployer(insuranceBasisSalary);
       const healthCo = calculateHealthInsuranceEmployer(insuranceBasisSalary);
-      const pension = calculatePension(insuranceBasisSalary);
+      
+      const pension = calculatePension(pensionBasisSalary);
 
       const netPay = grossSalary - totalDeductions;
-      const totalCompanyCost = grossSalary + laborCo + healthCo + pension;
+      
+      // Update: Total Company Cost = Net Pay + Company Insurance + Pension
+      // Previously: (Gross - laborEmp - healthEmp) + laborCo + healthCo + pension
+      // New Requirement: Deduct ALL employee deductions (Labor + Health + Custom). 
+      // This is mathematically equivalent to: Net Pay + LaborCo + HealthCo + Pension.
+      // Explanation: Net Pay is what company pays to employee. Statutory costs are what company pays to govt. 
+      // Custom deductions (like fines, loan repayment) are kept by company (reducing cost) or paid to 3rd party (pass-through).
+      // Assuming "Cost" means "Total Cash Outflow from Company specific to this employee's employment", 
+      // if deduction is kept by company, it reduces cost. If deduction is pass through, it is neutral (but Net Pay reflects it).
+      // Using Net Pay + Employer Statutory Costs satisfies "Deduct all deductions from Cost".
+      const totalCompanyCost = netPay + laborCo + healthCo + pension;
       
       map.set(emp.id, {
         employeeId: emp.id,
         insuredSalary,
         insuredSalaryHealth,
+        insuredSalaryPension,
         laborInsuranceEmp: laborEmp,
         healthInsuranceEmp: healthEmp,
         totalCustomDeductions,
@@ -235,7 +329,7 @@ export default function App() {
       });
     });
     return map;
-  }, [employees]);
+  }, [employees, useBaseSalaryForPension]); // Recalculate when pension checkbox toggles
 
   const filteredEmployees = employees.filter(e => 
     e.name.includes(searchQuery) || e.department.includes(searchQuery)
@@ -257,8 +351,6 @@ export default function App() {
     setIsEditing(false);
     setSelectedEmployeeId(emp.id); 
     if(activeTab === TabView.DASHBOARD) setActiveTab(TabView.EMPLOYEES);
-
-    // Trigger Cloud Save
     syncToCloud(newEmployees, companySettings);
   };
 
@@ -267,20 +359,321 @@ export default function App() {
     setEmployees(newEmployees);
     setDeleteConfirmId(null);
     if (selectedEmployeeId === id) setSelectedEmployeeId(null);
-
-    // Trigger Cloud Save
     syncToCloud(newEmployees, companySettings);
   };
 
   const handleSettingsChange = (newSettings: CompanySettings) => {
     setCompanySettings(newSettings);
-    // If URL changed, maybe trigger a sync?
+  };
+
+  const handleExportExcel = () => {
+    // Generate Totals
+    let totalBase = 0;
+    let totalMeal = 0;
+    let totalFuel = 0;
+    let totalBonus = 0;
+    const totalCustomAllowances: Record<string, number> = {};
+    allCustomAllowanceNames.forEach(n => totalCustomAllowances[n] = 0);
+    let totalOvertimePay = 0;
+    let totalGross = 0;
+    let totalLaborEmp = 0;
+    let totalHealthEmp = 0;
+    const totalCustomDeductions: Record<string, number> = {};
+    allCustomDeductionNames.forEach(n => totalCustomDeductions[n] = 0);
+    let totalDeductionsSum = 0;
+    let totalNet = 0;
+    let totalLaborCo = 0;
+    let totalHealthCo = 0;
+    let totalPension = 0;
+    let totalCost = 0;
+
+    employees.forEach(emp => {
+      const p = payrolls.get(emp.id)!;
+      totalBase += emp.baseSalary;
+      totalMeal += emp.mealAllowance;
+      totalFuel += emp.fuelAllowance;
+      totalBonus += emp.attendanceBonus;
+      allCustomAllowanceNames.forEach(name => {
+          totalCustomAllowances[name] += emp.customAllowances.find(a => a.name === name)?.amount || 0;
+      });
+      totalOvertimePay += p.overtimePay;
+      totalGross += p.grossSalary;
+      totalLaborEmp += p.laborInsuranceEmp;
+      totalHealthEmp += p.healthInsuranceEmp;
+      allCustomDeductionNames.forEach(name => {
+          totalCustomDeductions[name] += emp.customDeductions.find(d => d.name === name)?.amount || 0;
+      });
+      totalDeductionsSum += p.totalDeductions;
+      totalNet += p.netPay;
+      totalLaborCo += p.laborInsuranceCo;
+      totalHealthCo += p.healthInsuranceCo;
+      totalPension += p.pensionCompany;
+      totalCost += p.totalCompanyCost;
+    });
+
+    // Build HTML Table with Styles
+    let rows = '';
+    employees.forEach(emp => {
+      const p = payrolls.get(emp.id)!;
+      const fixedAllowances = emp.mealAllowance + emp.fuelAllowance + emp.attendanceBonus;
+      rows += `
+        <tr>
+          <td style="text-align:left;">${emp.name}</td>
+          <td style="text-align:left;">${emp.department}/${emp.position}</td>
+          <td>${emp.baseSalary}</td>
+          <td>${fixedAllowances}</td>
+          ${allCustomAllowanceNames.map(name => `<td style="color:#059669;">${emp.customAllowances.find(a => a.name === name)?.amount || 0}</td>`).join('')}
+          <td style="background-color:#fff7ed; color:#c2410c;">${p.overtimePay}</td>
+          <td style="font-weight:bold;">${p.grossSalary}</td>
+          <td style="color:#e11d48;">-${p.laborInsuranceEmp}</td>
+          <td style="color:#e11d48;">-${p.healthInsuranceEmp}</td>
+          ${allCustomDeductionNames.map(name => `<td style="color:#e11d48;">-${emp.customDeductions.find(d => d.name === name)?.amount || 0}</td>`).join('')}
+          <td style="color:#9f1239; font-weight:bold;">-${p.totalDeductions}</td>
+          <td style="background-color:#ecfdf5; color:#059669; font-weight:bold;">${p.netPay}</td>
+          <td style="color:#64748b;">${p.laborInsuranceCo}</td>
+          <td style="color:#64748b;">${p.healthInsuranceCo}</td>
+          <td style="color:#64748b;">${p.pensionCompany}</td>
+          <td style="font-weight:bold;">${p.totalCompanyCost}</td>
+        </tr>
+      `;
+    });
+
+    const totalRow = `
+      <tr style="background-color: #f1f5f9; font-weight: bold;">
+         <td colspan="2">總計</td>
+         <td>${totalBase}</td>
+         <td>${totalMeal + totalFuel + totalBonus}</td>
+         ${allCustomAllowanceNames.map(n => `<td style="color:#059669;">${totalCustomAllowances[n]}</td>`).join('')}
+         <td style="color:#c2410c;">${totalOvertimePay}</td>
+         <td>${totalGross}</td>
+         <td style="color:#be123c;">-${totalLaborEmp}</td>
+         <td style="color:#be123c;">-${totalHealthEmp}</td>
+         ${allCustomDeductionNames.map(n => `<td style="color:#be123c;">${totalCustomDeductions[n]}</td>`).join('')}
+         <td style="color:#9f1239;">-${totalDeductionsSum}</td>
+         <td style="background-color:#d1fae5; color:#065f46;">${totalNet}</td>
+         <td>${totalLaborCo}</td>
+         <td>${totalHealthCo}</td>
+         <td>${totalPension}</td>
+         <td>${totalCost}</td>
+      </tr>
+    `;
+
+    const html = `
+      <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+      <head>
+        <meta http-equiv="content-type" content="application/vnd.ms-excel; charset=UTF-8">
+        <style>
+          body { font-family: "Microsoft JhengHei", sans-serif; }
+          table { border-collapse: collapse; width: 100%; }
+          td, th { border: 1px solid #cbd5e1; padding: 5px; text-align: right; vertical-align: middle; }
+          th { background-color: #f1f5f9; text-align: center; font-weight: bold; height: 40px; color: #334155; }
+        </style>
+      </head>
+      <body>
+        <h3>${companySettings.name} - 薪資總表 (${selectedYearMonth})</h3>
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 120px;">姓名</th>
+              <th style="width: 150px;">部門/職位</th>
+              <th>本俸</th>
+              <th>伙食/油資/全勤</th>
+              ${allCustomAllowanceNames.map(n => `<th style="color:#059669;">${n}</th>`).join('')}
+              <th style="background-color:#fff7ed; color:#9a3412;">加班費</th>
+              <th>應發總額</th>
+              <th style="color:#e11d48;">勞保(自)</th>
+              <th style="color:#e11d48;">健保(自)</th>
+              ${allCustomDeductionNames.map(n => `<th style="color:#e11d48;">${n}</th>`).join('')}
+              <th style="color:#9f1239;">應扣總額</th>
+              <th style="background-color:#ecfdf5; color:#047857;">實發金額</th>
+              <th style="color:#475569;">勞保(公)</th>
+              <th style="color:#475569;">健保(公)</th>
+              <th style="color:#475569;">勞退(6%)</th>
+              <th>公司總成本(扣除應扣總額)</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+          <tfoot>
+            ${totalRow}
+          </tfoot>
+        </table>
+      </body>
+      </html>
+    `;
+
+    const blob = new Blob([html], { type: 'application/vnd.ms-excel' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${companySettings.name}_薪資總表_${selectedYearMonth}.xls`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleBatchPrint = () => {
+    setIsPrintingBatch(true);
+    // Wait for render then print
+    setTimeout(() => {
+       window.print();
+       // Optional: setIsPrintingBatch(false) after print logic if desired, 
+       // but keeping it open allows user to review what they printed. 
+       // We can add a close button in the view.
+    }, 500);
   };
 
   const inputStyle = "px-3 py-1.5 bg-white text-black border border-black rounded text-sm focus:ring-2 focus:ring-indigo-500 outline-none";
 
+  // If we are in batch print mode, render only the print view
+  if (isPrintingBatch) {
+    return (
+      <div className="bg-white min-h-screen">
+        <div className="no-print p-4 flex justify-between items-center bg-slate-800 text-white sticky top-0 z-50">
+           <span className="font-bold text-lg">全員薪資單列印預覽 (A4 - 4人/頁)</span>
+           <div className="flex gap-4">
+              <button 
+                onClick={() => window.print()} 
+                className="bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded flex items-center"
+              >
+                <Printer size={20} className="mr-2"/> 立即列印
+              </button>
+              <button 
+                onClick={() => setIsPrintingBatch(false)} 
+                className="bg-slate-600 hover:bg-slate-500 px-4 py-2 rounded"
+              >
+                關閉預覽
+              </button>
+           </div>
+        </div>
+        <BatchPayslipPrint 
+          employees={filteredEmployees.length > 0 ? filteredEmployees : employees} 
+          payrolls={payrolls}
+          companySettings={companySettings}
+          selectedYearMonth={selectedYearMonth}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen flex bg-slate-50 font-sans">
+
+      {/* Insurance Table Modal (Shared) */}
+      {showInsuranceTable && (
+        <div className="fixed inset-0 z-50 flex no-print pointer-events-none">
+          <div 
+             className="bg-white rounded-xl shadow-2xl max-w-5xl w-full max-h-[90vh] overflow-hidden flex flex-col absolute pointer-events-auto"
+             style={{ 
+               transform: `translate(${modalPosition.x}px, ${modalPosition.y}px)`,
+               left: 'calc(50% - 32rem)',
+               top: '10%',
+               boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)'
+             }}
+          >
+            <div 
+              className="p-4 border-b border-slate-200 flex justify-between items-center bg-slate-50 cursor-move"
+              onMouseDown={handleModalMouseDown}
+            >
+               <h3 className="text-xl font-bold text-slate-800 flex items-center pointer-events-none">
+                 <Table2 className="mr-2"/> 勞健保與勞退分級表
+               </h3>
+               <button onClick={() => setShowInsuranceTable(false)} className="p-2 hover:bg-slate-200 rounded-full"><X/></button>
+            </div>
+            <div className="p-6 overflow-y-auto">
+               <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+                  {/* Labor Insurance */}
+                  <div>
+                     <h4 className="font-bold text-rose-700 mb-2 border-b-2 border-rose-200 pb-1">勞工保險</h4>
+                     <div className="overflow-x-auto border rounded-lg h-96">
+                        <table className="w-full text-sm text-center">
+                           <thead className="bg-rose-50 text-rose-900 font-bold sticky top-0">
+                              <tr>
+                                 <th className="p-2 border-b">投保薪資</th>
+                                 <th className="p-2 border-b">自付(20%)</th>
+                                 <th className="p-2 border-b">公司(70%)</th>
+                              </tr>
+                           </thead>
+                           <tbody className="divide-y divide-slate-100">
+                              {LABOR_BRACKETS.map(salary => (
+                                 <tr key={salary} className="hover:bg-slate-50">
+                                    <td className="p-1.5 font-mono">{salary.toLocaleString()}</td>
+                                    <td className="p-1.5 text-rose-600 font-medium">
+                                       {Math.round(salary * LABOR_INSURANCE_RATE * LABOR_EMPLOYEE_SHARE)}
+                                    </td>
+                                    <td className="p-1.5 text-slate-500">
+                                       {Math.round(salary * LABOR_INSURANCE_RATE * LABOR_EMPLOYER_SHARE)}
+                                    </td>
+                                 </tr>
+                              ))}
+                           </tbody>
+                        </table>
+                     </div>
+                  </div>
+
+                  {/* Health Insurance */}
+                  <div>
+                     <h4 className="font-bold text-emerald-700 mb-2 border-b-2 border-emerald-200 pb-1">全民健保</h4>
+                     <div className="overflow-x-auto border rounded-lg h-96">
+                        <table className="w-full text-sm text-center">
+                           <thead className="bg-emerald-50 text-emerald-900 font-bold sticky top-0">
+                              <tr>
+                                 <th className="p-2 border-b">投保薪資</th>
+                                 <th className="p-2 border-b">本人負擔</th>
+                                 <th className="p-2 border-b">公司負擔</th>
+                              </tr>
+                           </thead>
+                           <tbody className="divide-y divide-slate-100">
+                              {HEALTH_BRACKETS.map(salary => {
+                                 const single = Math.round(salary * HEALTH_INSURANCE_RATE * HEALTH_EMPLOYEE_SHARE);
+                                 const company = Math.round(salary * HEALTH_INSURANCE_RATE * HEALTH_EMPLOYER_SHARE * (1 + AVG_DEPENDENTS_EMPLOYER));
+                                 return (
+                                 <tr key={salary} className="hover:bg-slate-50">
+                                    <td className="p-1.5 font-mono">{salary.toLocaleString()}</td>
+                                    <td className="p-1.5 text-emerald-600 font-medium">
+                                       {single}
+                                    </td>
+                                    <td className="p-1.5 text-slate-500">
+                                       {company}
+                                    </td>
+                                 </tr>
+                              )})}
+                           </tbody>
+                        </table>
+                     </div>
+                  </div>
+
+                  {/* Pension */}
+                  <div>
+                     <h4 className="font-bold text-indigo-700 mb-2 border-b-2 border-indigo-200 pb-1">勞工退休金(6%)</h4>
+                     <div className="overflow-x-auto border rounded-lg h-96">
+                        <table className="w-full text-sm text-center">
+                           <thead className="bg-indigo-50 text-indigo-900 font-bold sticky top-0">
+                              <tr>
+                                 <th className="p-2 border-b">月提繳工資</th>
+                                 <th className="p-2 border-b">公司提繳</th>
+                              </tr>
+                           </thead>
+                           <tbody className="divide-y divide-slate-100">
+                              {PENSION_BRACKETS.map(salary => (
+                                 <tr key={salary} className="hover:bg-slate-50">
+                                    <td className="p-1.5 font-mono">{salary.toLocaleString()}</td>
+                                    <td className="p-1.5 text-indigo-600 font-medium">
+                                       {Math.round(salary * 0.06)}
+                                    </td>
+                                 </tr>
+                              ))}
+                           </tbody>
+                        </table>
+                     </div>
+                  </div>
+
+               </div>
+            </div>
+          </div>
+        </div>
+      )}
       
       {/* Sidebar */}
       <nav className="w-64 bg-slate-900 text-slate-300 flex-shrink-0 flex flex-col no-print">
@@ -313,7 +706,7 @@ export default function App() {
             <span className="font-bold text-slate-400">資料同步狀態</span>
             {isSyncing ? (
               <RefreshCw size={12} className="animate-spin text-indigo-400"/>
-            ) : companySettings.googleSheetScriptUrl ? (
+            ) : companySettings.googleSheetScriptUrl && !syncError ? (
               <Cloud size={12} className="text-emerald-500"/>
             ) : (
               <CloudOff size={12} className="text-slate-600"/>
@@ -321,8 +714,14 @@ export default function App() {
           </div>
           {companySettings.googleSheetScriptUrl ? (
              <div className="text-slate-500">
-               {syncError ? <span className="text-rose-500">{syncError}</span> : `已連線至 Google Sheets`}
-               {lastSyncTime && <div className="mt-1 opacity-70">最後更新: {lastSyncTime}</div>}
+               {syncError ? (
+                 <span className="text-rose-500 flex items-center gap-1">
+                   <AlertTriangle size={12}/> {syncError}
+                 </span>
+               ) : (
+                 `已連線至 Google Sheets`
+               )}
+               {lastSyncTime && !syncError && <div className="mt-1 opacity-70">最後更新: {lastSyncTime}</div>}
              </div>
           ) : (
              <div className="text-slate-600 italic">尚未設定雲端連結</div>
@@ -376,6 +775,7 @@ export default function App() {
                  value={selectedYearMonth}
                  onChange={(e) => setSelectedYearMonth(e.target.value)}
                  className="bg-transparent border-none outline-none text-sm font-bold text-slate-900 cursor-pointer"
+                 style={{ colorScheme: 'light' }}
                />
              </div>
 
@@ -417,14 +817,18 @@ export default function App() {
                </div>
                <p className="text-xs text-slate-500 mb-3">
                  將資料儲存在您私人的 Google 試算表中。請輸入「Apps Script 網頁應用程式網址」。
+                 <br/><span className="text-orange-600">注意：每次修改 GAS 程式碼後，必須選擇「新增部署」才能生效。</span>
                </p>
                <input 
                  type="text" 
                  placeholder="https://script.google.com/macros/s/..../exec" 
                  value={companySettings.googleSheetScriptUrl || ''} 
                  onChange={e => handleSettingsChange({...companySettings, googleSheetScriptUrl: e.target.value})} 
-                 className={`${inputStyle} w-full font-mono text-xs mb-2`}
+                 className={`${inputStyle} w-full font-mono text-xs mb-2 ${syncError ? 'border-red-500 bg-red-50' : ''}`}
                />
+               {syncError && (
+                 <div className="text-xs text-rose-600 mb-2 font-bold">{syncError}</div>
+               )}
                <div className="flex justify-end">
                  <button 
                    onClick={() => syncFromCloud()}
@@ -443,34 +847,41 @@ export default function App() {
           {/* DASHBOARD */}
           {activeTab === TabView.DASHBOARD && (
             <div className="space-y-8 animate-fade-in">
-              {/* Top Cards (Same as before) */}
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+              {/* Top Cards - Updated Layout to 5 Columns or Responsive Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
                   <div className="text-slate-500 text-xs font-bold uppercase mb-2">應發薪資總額</div>
                   <div className="text-2xl font-black text-slate-800">
-                    ${Array.from(payrolls.values()).reduce((sum, p: CalculatedPayroll) => sum + p.grossSalary, 0).toLocaleString()}
+                    ${Array.from(payrolls.values()).reduce((sum: number, p: CalculatedPayroll) => sum + p.grossSalary, 0).toLocaleString()}
                   </div>
                 </div>
-                <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                
+                {/* NEW CARD: Net Pay Total */}
+                <div className="bg-emerald-600 p-5 rounded-xl shadow-lg shadow-emerald-200 text-white">
+                  <div className="text-emerald-100 text-xs font-bold uppercase mb-2">實發金額總額</div>
+                  <div className="text-2xl font-black">
+                    ${Array.from(payrolls.values()).reduce((sum: number, p: CalculatedPayroll) => sum + p.netPay, 0).toLocaleString()}
+                  </div>
+                </div>
+
+                <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
                    <div className="text-slate-500 text-xs font-bold uppercase mb-2">公司負擔勞健保</div>
-                   <div className="text-2xl font-black text-slate-800">
-                    ${Array.from(payrolls.values()).reduce((sum, p: CalculatedPayroll) => sum + p.laborInsuranceCo + p.healthInsuranceCo, 0).toLocaleString()}
+                   <div className="text-xl font-black text-slate-800">
+                    ${Array.from(payrolls.values()).reduce((sum: number, p: CalculatedPayroll) => sum + p.laborInsuranceCo + p.healthInsuranceCo, 0).toLocaleString()}
                   </div>
-                  <div className="text-xs text-slate-400 mt-1">
-                     勞保 ${Array.from(payrolls.values()).reduce((sum, p: CalculatedPayroll) => sum + p.laborInsuranceCo, 0).toLocaleString()} / 
-                     健保 ${Array.from(payrolls.values()).reduce((sum, p: CalculatedPayroll) => sum + p.healthInsuranceCo, 0).toLocaleString()}
-                  </div>
-                </div>
-                <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                   <div className="text-slate-500 text-xs font-bold uppercase mb-2">公司提撥勞退 (6%)</div>
-                   <div className="text-2xl font-black text-slate-800">
-                    ${Array.from(payrolls.values()).reduce((sum, p: CalculatedPayroll) => sum + p.pensionCompany, 0).toLocaleString()}
+                  <div className="text-[10px] text-slate-400 mt-1">
+                     勞 ${Array.from(payrolls.values()).reduce((sum: number, p: CalculatedPayroll) => sum + p.laborInsuranceCo, 0).toLocaleString()} / 
+                     健 ${Array.from(payrolls.values()).reduce((sum: number, p: CalculatedPayroll) => sum + p.healthInsuranceCo, 0).toLocaleString()}
                   </div>
                 </div>
-                <div className="bg-indigo-600 p-6 rounded-xl shadow-lg shadow-indigo-200 text-white">
+
+                <div className="bg-indigo-600 p-5 rounded-xl shadow-lg shadow-indigo-200 text-white">
                    <div className="text-indigo-200 text-xs font-bold uppercase mb-2">人事總支出成本</div>
-                   <div className="text-3xl font-black">
-                    ${Array.from(payrolls.values()).reduce((sum, p: CalculatedPayroll) => sum + p.totalCompanyCost, 0).toLocaleString()}
+                   <div className="text-2xl font-black">
+                    ${Array.from(payrolls.values()).reduce((sum: number, p: CalculatedPayroll) => sum + p.totalCompanyCost, 0).toLocaleString()}
+                  </div>
+                  <div className="text-[10px] text-indigo-300 mt-1">
+                    *已扣除所有應扣項目
                   </div>
                 </div>
               </div>
@@ -478,10 +889,24 @@ export default function App() {
               {/* Table */}
               <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                 <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center">
-                  <h3 className="font-bold text-slate-800">全員薪資明細表 ({selectedYearMonth})</h3>
-                  <button onClick={() => window.print()} className="text-sm text-slate-500 hover:text-slate-800 flex items-center">
-                    <FileText size={16} className="mr-1"/> 列印報表
-                  </button>
+                  <div className="flex items-center gap-4">
+                    <h3 className="font-bold text-slate-800">全員薪資明細表 ({selectedYearMonth})</h3>
+                  </div>
+                  
+                  <div className="flex items-center gap-4">
+                     <button 
+                        onClick={() => setShowInsuranceTable(true)} 
+                        className="text-sm bg-slate-100 text-slate-700 hover:bg-slate-200 px-3 py-1.5 rounded-lg flex items-center font-bold transition border border-slate-300"
+                     >
+                        <Table2 size={16} className="mr-1"/> 級距表
+                     </button>
+                     <button 
+                        onClick={handleExportExcel} 
+                        className="text-sm bg-emerald-50 text-emerald-700 hover:bg-emerald-100 px-3 py-1.5 rounded-lg flex items-center font-bold transition border border-emerald-200"
+                     >
+                        <Download size={16} className="mr-1"/> 匯出報表 (Excel)
+                     </button>
+                  </div>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-sm whitespace-nowrap">
@@ -500,7 +925,8 @@ export default function App() {
                         {allCustomDeductionNames.map(name => (
                           <th key={name} className="px-4 py-3 text-right text-rose-600">{name}</th>
                         ))}
-                        <th className="px-4 py-3 text-right font-black border-l border-slate-200 bg-indigo-50 text-indigo-700">實發金額</th>
+                        <th className="px-4 py-3 text-right text-rose-800 font-bold border-l border-slate-200">應扣總額</th>
+                        <th className="px-4 py-3 text-right font-black border-l border-slate-200 bg-emerald-50 text-emerald-700">實發金額</th>
                         <th className="px-4 py-3 text-right text-slate-500 border-l border-slate-200">勞保(公)</th>
                         <th className="px-4 py-3 text-right text-slate-500">健保(公)</th>
                         <th className="px-4 py-3 text-right text-slate-500">勞退(6%)</th>
@@ -515,7 +941,9 @@ export default function App() {
                         return (
                           <tr key={emp.id} className="hover:bg-slate-50 transition">
                             <td className="px-4 py-3 sticky left-0 bg-white hover:bg-slate-50 font-medium text-slate-900 border-r border-slate-100 z-10">
-                              {emp.name} <span className="text-slate-400 font-normal ml-1 text-xs">{emp.position}</span>
+                              {emp.name} 
+                              <span className="text-slate-400 font-normal ml-1 text-xs">{emp.position}</span>
+                              {emp.note && <div className="text-[10px] text-indigo-500 italic mt-0.5">{emp.note}</div>}
                             </td>
                             <td className="px-4 py-3 text-right font-mono text-slate-600">{emp.baseSalary.toLocaleString()}</td>
                             <td className="px-4 py-3 text-right font-mono text-slate-600">{fixedAllowances.toLocaleString()}</td>
@@ -548,7 +976,8 @@ export default function App() {
                                 </td>
                               );
                             })}
-                            <td className="px-4 py-3 text-right font-mono font-black text-indigo-600 bg-indigo-50/50 border-l border-slate-100">{p.netPay.toLocaleString()}</td>
+                            <td className="px-4 py-3 text-right font-mono font-bold text-rose-800 border-l border-slate-100">-{p.totalDeductions.toLocaleString()}</td>
+                            <td className="px-4 py-3 text-right font-mono font-black text-emerald-600 bg-emerald-50/50 border-l border-slate-100">{p.netPay.toLocaleString()}</td>
                             <td className="px-4 py-3 text-right font-mono text-slate-500 border-l border-slate-100">{p.laborInsuranceCo.toLocaleString()}</td>
                             <td className="px-4 py-3 text-right font-mono text-slate-500">{p.healthInsuranceCo.toLocaleString()}</td>
                             <td className="px-4 py-3 text-right font-mono text-slate-500">{p.pensionCompany.toLocaleString()}</td>
@@ -557,6 +986,36 @@ export default function App() {
                         );
                       })}
                     </tbody>
+                    <tfoot className="bg-slate-100 border-t-2 border-slate-300 font-bold text-slate-900 text-xs">
+                       <tr>
+                          <td className="px-4 py-3 sticky left-0 bg-slate-100 border-r border-slate-300 z-10">總計</td>
+                          <td className="px-4 py-3 text-right font-mono">{Array.from(payrolls.values()).reduce((sum: number, p: CalculatedPayroll) => sum + employees.find(e => e.id === p.employeeId)!.baseSalary, 0).toLocaleString()}</td>
+                          <td className="px-4 py-3 text-right font-mono">{Array.from(payrolls.values()).reduce((sum: number, p: CalculatedPayroll) => {
+                              const e = employees.find(x => x.id === p.employeeId)!;
+                              return sum + e.mealAllowance + e.fuelAllowance + e.attendanceBonus;
+                          }, 0).toLocaleString()}</td>
+                          {allCustomAllowanceNames.map(name => (
+                             <td key={name} className="px-4 py-3 text-right font-mono text-emerald-700">
+                                {employees.reduce((sum: number, e) => sum + (e.customAllowances.find(a => a.name === name)?.amount || 0), 0).toLocaleString()}
+                             </td>
+                          ))}
+                          <td className="px-4 py-3 text-right font-mono text-orange-700">{Array.from(payrolls.values()).reduce((sum: number, p: CalculatedPayroll) => sum + p.overtimePay, 0).toLocaleString()}</td>
+                          <td className="px-4 py-3 text-right font-mono font-black border-l border-slate-300">{Array.from(payrolls.values()).reduce((sum: number, p: CalculatedPayroll) => sum + p.grossSalary, 0).toLocaleString()}</td>
+                          <td className="px-4 py-3 text-right font-mono text-rose-700">{Array.from(payrolls.values()).reduce((sum: number, p: CalculatedPayroll) => sum + p.laborInsuranceEmp, 0).toLocaleString()}</td>
+                          <td className="px-4 py-3 text-right font-mono text-rose-700">{Array.from(payrolls.values()).reduce((sum: number, p: CalculatedPayroll) => sum + p.healthInsuranceEmp, 0).toLocaleString()}</td>
+                          {allCustomDeductionNames.map(name => (
+                             <td key={name} className="px-4 py-3 text-right font-mono text-rose-700">
+                                {employees.reduce((sum: number, e) => sum + (e.customDeductions.find(d => d.name === name)?.amount || 0), 0).toLocaleString()}
+                             </td>
+                          ))}
+                          <td className="px-4 py-3 text-right font-mono font-bold text-rose-800 border-l border-slate-300">{Array.from(payrolls.values()).reduce((sum: number, p: CalculatedPayroll) => sum + p.totalDeductions, 0).toLocaleString()}</td>
+                          <td className="px-4 py-3 text-right font-mono font-black bg-emerald-100 text-emerald-800 border-l border-slate-300">{Array.from(payrolls.values()).reduce((sum: number, p: CalculatedPayroll) => sum + p.netPay, 0).toLocaleString()}</td>
+                          <td className="px-4 py-3 text-right font-mono text-slate-600 border-l border-slate-300">{Array.from(payrolls.values()).reduce((sum: number, p: CalculatedPayroll) => sum + p.laborInsuranceCo, 0).toLocaleString()}</td>
+                          <td className="px-4 py-3 text-right font-mono text-slate-600">{Array.from(payrolls.values()).reduce((sum: number, p: CalculatedPayroll) => sum + p.healthInsuranceCo, 0).toLocaleString()}</td>
+                          <td className="px-4 py-3 text-right font-mono text-slate-600">{Array.from(payrolls.values()).reduce((sum: number, p: CalculatedPayroll) => sum + p.pensionCompany, 0).toLocaleString()}</td>
+                          <td className="px-4 py-3 text-right font-mono font-black border-l border-slate-300">{Array.from(payrolls.values()).reduce((sum: number, p: CalculatedPayroll) => sum + p.totalCompanyCost, 0).toLocaleString()}</td>
+                       </tr>
+                    </tfoot>
                   </table>
                 </div>
               </div>
@@ -585,13 +1044,22 @@ export default function App() {
                         className="pl-10 pr-4 py-2 bg-white text-black border border-black rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none w-64 placeholder-gray-500"
                       />
                     </div>
-                    <button 
-                      onClick={() => { setSelectedEmployeeId(null); setIsEditing(true); }}
-                      className="flex items-center px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition shadow-md font-bold"
-                    >
-                      <PlusCircle size={20} className="mr-2" />
-                      新增員工
-                    </button>
+                    <div className="flex gap-2">
+                       <button 
+                        onClick={handleBatchPrint}
+                        className="flex items-center px-4 py-2 bg-slate-700 text-white rounded-lg hover:bg-slate-800 transition shadow-md font-bold"
+                      >
+                        <Printer size={20} className="mr-2" />
+                        列印全員薪資單
+                      </button>
+                      <button 
+                        onClick={() => { setSelectedEmployeeId(null); setIsEditing(true); }}
+                        className="flex items-center px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition shadow-md font-bold"
+                      >
+                        <PlusCircle size={20} className="mr-2" />
+                        新增員工
+                      </button>
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -604,10 +1072,11 @@ export default function App() {
                                <div>
                                  <h3 className="text-lg font-bold text-slate-900">{emp.name}</h3>
                                  <p className="text-slate-500 text-sm">{emp.department || '未分派'} / {emp.position || '職員'}</p>
+                                 {emp.note && <div className="text-xs text-indigo-500 mt-1 italic">{emp.note}</div>}
                                </div>
                                <div className="text-right">
                                   <div className="text-xs text-slate-400 uppercase">實發金額</div>
-                                  <div className="text-xl font-black text-indigo-600 font-mono">${p.netPay.toLocaleString()}</div>
+                                  <div className="text-xl font-black text-emerald-600 font-mono">${p.netPay.toLocaleString()}</div>
                                </div>
                             </div>
                             

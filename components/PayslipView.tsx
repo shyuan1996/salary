@@ -1,6 +1,6 @@
 import React from 'react';
 import { Employee, CalculatedPayroll, CompanySettings } from '../types';
-import { Printer, Calendar } from 'lucide-react';
+import { Printer, Calendar, Download } from 'lucide-react';
 
 interface Props {
   employee: Employee;
@@ -51,6 +51,45 @@ export const PayslipView: React.FC<Props> = ({ employee, payroll, companySetting
   
   const otDetails = otFormulas.length > 0 ? `時薪$${hourlyRate} × [${otFormulas.join(' + ')}]` : '';
 
+  const handleExportCSV = () => {
+    let csv = '\uFEFF'; // BOM
+    csv += `公司名稱:,${companySettings.name}\n`;
+    csv += `薪資月份:,${displayDate}\n`;
+    csv += `員工姓名:,${employee.name},部門/職位:,${employee.department}/${employee.position}\n`;
+    csv += `----------------\n`;
+    csv += `[應發項目],金額\n`;
+    csv += `本俸,${employee.baseSalary}\n`;
+    if(employee.mealAllowance) csv += `伙食津貼,${employee.mealAllowance}\n`;
+    if(employee.fuelAllowance) csv += `油資津貼,${employee.fuelAllowance}\n`;
+    if(employee.attendanceBonus) csv += `全勤獎金,${employee.attendanceBonus}\n`;
+    employee.customAllowances.forEach(a => {
+        csv += `${a.name},${a.amount}\n`;
+    });
+    if(payroll.overtimePay > 0) csv += `加班費,${payroll.overtimePay}\n`;
+    csv += `應發小計,${payroll.grossSalary}\n`;
+    csv += `----------------\n`;
+    csv += `[應扣項目],金額\n`;
+    csv += `勞保費,${payroll.laborInsuranceEmp}\n`;
+    csv += `健保費,${payroll.healthInsuranceEmp}\n`;
+    employee.customDeductions.forEach(d => {
+        csv += `${d.name},${d.amount}\n`;
+    });
+    csv += `應扣小計,${payroll.totalDeductions}\n`;
+    csv += `----------------\n`;
+    csv += `實發金額,${payroll.netPay}\n`;
+    csv += `\n`;
+    csv += `銀行帳號:,${employee.bankName} ${employee.bankAccount}\n`;
+    
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `${employee.name}_${selectedYearMonth}_薪資單.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   return (
     <div className="max-w-4xl mx-auto">
       <div className="flex justify-between items-center mb-6 no-print">
@@ -58,13 +97,22 @@ export const PayslipView: React.FC<Props> = ({ employee, payroll, companySetting
           <Calendar className="mr-2 text-indigo-600" />
           薪資明細單
         </h2>
-        <button
-          onClick={() => window.print()}
-          className="flex items-center px-4 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700 transition"
-        >
-          <Printer size={18} className="mr-2" />
-          列印
-        </button>
+        <div className="flex gap-2">
+            <button
+            onClick={handleExportCSV}
+            className="flex items-center px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition"
+            >
+            <Download size={18} className="mr-2" />
+            匯出 CSV
+            </button>
+            <button
+            onClick={() => window.print()}
+            className="flex items-center px-4 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700 transition"
+            >
+            <Printer size={18} className="mr-2" />
+            列印
+            </button>
+        </div>
       </div>
 
       {/* Printable Area */}
