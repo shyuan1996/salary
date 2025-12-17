@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Employee, Allowance, Deduction } from '../types';
-import { Plus, Trash2, Save, X, Calculator, Info, AlertTriangle, Table2, StickyNote } from 'lucide-react';
+import { Plus, Trash2, Save, X, Calculator, AlertTriangle, Table2, StickyNote } from 'lucide-react';
 import { 
   calculateOvertimePay, 
   LABOR_BRACKETS, 

@@ -18,8 +18,7 @@ import {
   Download,
   Printer,
   Table2,
-  X,
-  Move
+  X
 } from 'lucide-react';
 
 import { Employee, TabView, CalculatedPayroll, CompanySettings } from './types';
@@ -106,7 +105,7 @@ export default function App() {
   const dragStartRef = useRef({ x: 0, y: 0, initialX: 0, initialY: 0 });
 
   // Pension setting state (Session based)
-  const [useBaseSalaryForPension, setUseBaseSalaryForPension] = useState(false);
+  const [useBaseSalaryForPension] = useState(false);
 
   // -- Sync State --
   const [isSyncing, setIsSyncing] = useState(false);
